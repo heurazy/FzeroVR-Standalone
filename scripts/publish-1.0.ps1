@@ -7,15 +7,15 @@ $tag = 'v1.0.0'
 $releaseName = 'F-Zero X VR Standalone v1.0.0'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $apk = Join-Path $root 'app\build\outputs\apk\debug\app-debug.apk'
-$notes = Join-Path $root 'RELEASE_NOTES_1.0.0.md'
+$notesPath = Join-Path $root 'RELEASE_NOTES_1.0.0.md'
 
 Set-Location $root
 
 if (-not (Test-Path $apk)) {
     throw "APK not found: $apk"
 }
-if (-not (Test-Path $notes)) {
-    throw "Release notes not found: $notes"
+if (-not (Test-Path $notesPath)) {
+    throw "Release notes not found: $notesPath"
 }
 
 $metadata = Join-Path $root 'app\build\outputs\apk\debug\output-metadata.json'
@@ -112,17 +112,25 @@ try {
 } catch {
     if ($_.Exception.Response.StatusCode.value__ -ne 404) { throw }
 
-    $payload = @{
-        tag_name = $tag
+    # Windows PowerShell 5.1 does not reliably treat UTF-8-without-BOM text as UTF-8 via Get-Content.
+    # Read it explicitly and force the release body to a plain System.String before JSON serialization.
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    $releaseBody = [string][System.IO.File]::ReadAllText($notesPath, $utf8)
+    $payloadObject = @{
+        tag_name = [string]$tag
         target_commitish = 'main'
-        name = $releaseName
-        body = Get-Content $notes -Raw
+        name = [string]$releaseName
+        body = [string]$releaseBody
         draft = $false
         prerelease = $false
         generate_release_notes = $false
-    } | ConvertTo-Json
+    }
+    $payload = $payloadObject | ConvertTo-Json -Depth 4 -Compress
+    $payloadBytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
 
-    $release = Invoke-RestMethod -Method Post -Uri "$apiBase/releases" -Headers $headers -ContentType 'application/json' -Body $payload
+    # Send explicit UTF-8 bytes. This avoids GitHub's "Problems parsing JSON" response under
+    # Windows PowerShell 5.1 when the release notes contain non-ASCII punctuation.
+    $release = Invoke-RestMethod -Method Post -Uri "$apiBase/releases" -Headers $headers -ContentType 'application/json; charset=utf-8' -Body $payloadBytes
 }
 
 $assetName = 'FzeroVR-Standalone-v1.0.0-Quest3.apk'
