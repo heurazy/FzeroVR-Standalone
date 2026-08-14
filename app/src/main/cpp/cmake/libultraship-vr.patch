@@ -1,0 +1,43 @@
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+index e7501b7e..9d03eabd 100644
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -50,6 +50,7 @@ std::stack<std::string> currentDir;
+ 
+ // Run-log shim from the port (port_log.h), used by the env-gated diagnostics below.
+ extern "C" void gdx_dbg_logf(const char* fmt, ...);
++extern "C" int gdx_vr_fast3d_get_eye_matrix(float* out16) __attribute__((weak));
+ 
+ #define SEG_ADDR(seg, addr) (addr | (seg << 24) | 1)
+ #define SUPPORT_CHECK(x) assert(x)
+@@ -2276,7 +2277,13 @@ void Interpreter::GfxSpMatrix(uint8_t parameters, const int32_t* addr) {
+         }
+         mRsp->lights_changed = 1;
+     }
+-    MatrixMul(mRsp->MP_matrix, mRsp->modelview_matrix_stack[mRsp->modelview_matrix_stack_size - 1], mRsp->P_matrix);
++    float gdxVrEyeVp[4][4];
++    if (gdx_vr_fast3d_get_eye_matrix != nullptr &&
++        gdx_vr_fast3d_get_eye_matrix(&gdxVrEyeVp[0][0]) != 0) {
++        MatrixMul(mRsp->MP_matrix, mRsp->modelview_matrix_stack[mRsp->modelview_matrix_stack_size - 1], gdxVrEyeVp);
++    } else {
++        MatrixMul(mRsp->MP_matrix, mRsp->modelview_matrix_stack[mRsp->modelview_matrix_stack_size - 1], mRsp->P_matrix);
++    }
+ }
+ 
+ void Interpreter::GfxSpPopMatrix(uint32_t count) {
+@@ -2284,8 +2291,13 @@ void Interpreter::GfxSpPopMatrix(uint32_t count) {
+         if (mRsp->modelview_matrix_stack_size > 0) {
+             --mRsp->modelview_matrix_stack_size;
+             if (mRsp->modelview_matrix_stack_size > 0) {
+-                MatrixMul(mRsp->MP_matrix, mRsp->modelview_matrix_stack[mRsp->modelview_matrix_stack_size - 1],
+-                          mRsp->P_matrix);
++                float gdxVrEyeVp[4][4];
++                if (gdx_vr_fast3d_get_eye_matrix != nullptr &&
++                    gdx_vr_fast3d_get_eye_matrix(&gdxVrEyeVp[0][0]) != 0) {
++                    MatrixMul(mRsp->MP_matrix, mRsp->modelview_matrix_stack[mRsp->modelview_matrix_stack_size - 1], gdxVrEyeVp);
++                } else {
++                    MatrixMul(mRsp->MP_matrix, mRsp->modelview_matrix_stack[mRsp->modelview_matrix_stack_size - 1], mRsp->P_matrix);
++                }
+             }
+         }
+     }

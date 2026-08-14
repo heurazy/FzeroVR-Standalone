@@ -1,0 +1,3 @@
+C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/_deps/spdlog-subbuild/CMakeFiles/spdlog-populate.dir
+C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/_deps/spdlog-subbuild/CMakeFiles/edit_cache.dir
+C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/_deps/spdlog-subbuild/CMakeFiles/rebuild_cache.dir

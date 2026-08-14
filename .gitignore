@@ -1,0 +1,38 @@
+# Android / Gradle
+.gradle/
+**/build/
+local.properties
+
+# Native build outputs
+.cxx/
+**/.cxx/
+.externalNativeBuild/
+
+# Local toolchains / caches
+.tools/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS / temporary
+.DS_Store
+Thumbs.db
+nul
+*.log
+*.tmp
+
+# Signing material
+*.jks
+*.keystore
+keystore.properties
+
+# ROMs / copyrighted game data
+*.z64
+*.n64
+*.v64
+*.rom
+
+# Generated archives/assets not intended for source control
+*.o2r

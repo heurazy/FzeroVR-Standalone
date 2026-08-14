@@ -1,0 +1,31 @@
+#include <filesystem>
+#include <fstream>
+#include <string>
+
+std::string GdxQuestInstallBuiltinResources(const char* filesDir) {
+    if (filesDir == nullptr || filesDir[0] == '\0') {
+        return {};
+    }
+
+    const std::filesystem::path root = std::filesystem::path(filesDir) / "gdx_quest_resources";
+    const std::filesystem::path shaderDir = root / "shaders" / "opengl";
+    std::error_code ec;
+    std::filesystem::create_directories(shaderDir, ec);
+    if (ec) {
+        return {};
+    }
+
+    static constexpr char kDefaultShader[] = R"GDXQUESTSHADER(@GDX_QUEST_DEFAULT_SHADER_SOURCE@)GDXQUESTSHADER";
+    const std::filesystem::path shaderPath = shaderDir / "default.shader.glsl";
+    std::ofstream out(shaderPath, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        return {};
+    }
+    out.write(kDefaultShader, static_cast<std::streamsize>(sizeof(kDefaultShader) - 1));
+    out.close();
+    if (!out) {
+        return {};
+    }
+
+    return root.string();
+}

@@ -1,0 +1,12 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/cmake_install.cmake",
+		"C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/lib/binarytools/cmake_install.cmake",
+		"C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/lib/n64graphics/cmake_install.cmake",
+		"C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/_deps/yaml-cpp-build/cmake_install.cmake",
+		"C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/_deps/spdlog-build/cmake_install.cmake",
+		"C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/_deps/tinyxml2-build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

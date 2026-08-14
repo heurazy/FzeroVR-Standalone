@@ -1,0 +1,9 @@
+{
+  "revision": 0,
+  "rules": [
+    {
+      "primary-output": "_deps\\yaml-cpp-build\\CMakeFiles\\yaml-cpp.dir\\src\\singledocparser.cpp.o"
+    }
+  ],
+  "version": 1
+}

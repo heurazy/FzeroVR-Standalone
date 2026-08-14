@@ -1,0 +1,65 @@
+ninja_dyndep_version = 1.0
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/contrib/graphbuilder.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/contrib/graphbuilderadapter.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/binary.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/convert.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/depthguard.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/directives.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/emit.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/emitfromevents.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/emitter.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/emitterstate.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/emitterutils.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/exceptions.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/exp.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/fptostring.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/memory.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/node.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/node_data.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/nodebuilder.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/nodeevents.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/null.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/ostream_wrapper.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/parse.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/parser.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/regex_yaml.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/scanner.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/scanscalar.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/scantag.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/scantoken.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/simplekey.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/singledocparser.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/stream.cpp.o: dyndep
+
+build _deps/yaml-cpp-build/CMakeFiles/yaml-cpp.dir/src/tag.cpp.o: dyndep
+

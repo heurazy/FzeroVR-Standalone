@@ -1,0 +1,14 @@
+# Target labels
+ libgfxd-populate
+# Source files and their labels
+C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/_deps/libgfxd-subbuild/CMakeFiles/libgfxd-populate
+C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/_deps/libgfxd-subbuild/CMakeFiles/libgfxd-populate.rule
+C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/_deps/libgfxd-subbuild/CMakeFiles/libgfxd-populate-complete.rule
+C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/_deps/libgfxd-subbuild/libgfxd-populate-prefix/src/libgfxd-populate-stamp/libgfxd-populate-build.rule
+C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/_deps/libgfxd-subbuild/libgfxd-populate-prefix/src/libgfxd-populate-stamp/libgfxd-populate-configure.rule
+C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/_deps/libgfxd-subbuild/libgfxd-populate-prefix/src/libgfxd-populate-stamp/libgfxd-populate-download.rule
+C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/_deps/libgfxd-subbuild/libgfxd-populate-prefix/src/libgfxd-populate-stamp/libgfxd-populate-install.rule
+C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/_deps/libgfxd-subbuild/libgfxd-populate-prefix/src/libgfxd-populate-stamp/libgfxd-populate-mkdir.rule
+C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/_deps/libgfxd-subbuild/libgfxd-populate-prefix/src/libgfxd-populate-stamp/libgfxd-populate-patch.rule
+C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/_deps/libgfxd-subbuild/libgfxd-populate-prefix/src/libgfxd-populate-stamp/libgfxd-populate-test.rule
+C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/_deps/libgfxd-subbuild/libgfxd-populate-prefix/src/libgfxd-populate-stamp/libgfxd-populate-update.rule

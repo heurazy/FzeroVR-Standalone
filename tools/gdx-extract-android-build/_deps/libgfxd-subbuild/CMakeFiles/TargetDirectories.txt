@@ -1,0 +1,3 @@
+C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/_deps/libgfxd-subbuild/CMakeFiles/libgfxd-populate.dir
+C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/_deps/libgfxd-subbuild/CMakeFiles/edit_cache.dir
+C:/Users/Quentin/Documents/vrmods/fzero/tools/gdx-extract-android-build/_deps/libgfxd-subbuild/CMakeFiles/rebuild_cache.dir
