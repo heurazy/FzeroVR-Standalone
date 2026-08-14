@@ -120,7 +120,7 @@ target_compile_options(fzerox_vr PRIVATE
     # The Quest debug APK keeps symbols/logging, but the N64->Fast3D translator is far too
     # branch/container-heavy to run at Clang's default -O0. Keep it optimized during headset
     # iteration as well; -g still gives useful native crash symbols.
-    -O2
+    -O3
     -Wall
     -Wextra
     -Wno-unused-parameter

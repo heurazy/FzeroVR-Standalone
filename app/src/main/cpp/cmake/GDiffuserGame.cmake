@@ -35,10 +35,11 @@ list(FILTER GDX_GAME_SOURCES EXCLUDE REGEX "/sys/cartridge_offsets\\.c$")
 # Quest uses a configure-time sys_main copy that disables the 64DD/LEO boot path; the upstream
 # host linker symbols for that overlay are stubs and cannot be used as Android memory ranges.
 list(FILTER GDX_GAME_SOURCES EXCLUDE REGEX "/sys/sys_main\\.c$")
-# Quest substitutes camera.c so the center-head VR pose is present before CPU-side culling and
-# background/model setup. course.c stays upstream: once the camera itself is VR-correct, stock
-# frustum culling is the right behavior and avoids the old 360-degree overdraw workaround.
+# Quest substitutes camera.c and course.c so CPU-side course streaming uses the physical HMD
+# direction/position instead of the chase-camera frustum. course_quest.c keeps a conservative
+# stereo/FOV safety margin while rejecting off-screen chunks before both eye renders.
 list(FILTER GDX_GAME_SOURCES EXCLUDE REGEX "/game/camera\\.c$")
+list(FILTER GDX_GAME_SOURCES EXCLUDE REGEX "/game/course\\.c$")
 list(FILTER GDX_GAME_SOURCES EXCLUDE REGEX "/game/racer\\.c$")
 # Quest uses configure-time race/background copies for VR section markers. race_quest separates
 # sky/world/HUD sections; background_quest switches finite background geometry back to WORLD after
@@ -59,6 +60,27 @@ list(FILTER GDX_GAME_SOURCES EXCLUDE REGEX "/overlays/machine_create/")
 list(FILTER GDX_GAME_SOURCES EXCLUDE REGEX "/overlays/ead_demo/")
 list(FILTER GDX_GAME_SOURCES EXCLUDE REGEX "/audio/disk/")
 
+# Quest performance: the upstream audio bring-up probes call gdx_dbg_logf() from the audio command
+# queue at very high frequency. They were useful while restoring audio, but every call still pays
+# varargs formatting + Android log I/O. Drop only the obsolete [audio-probe] family before va_start;
+# all startup/error/other diagnostics keep their existing behavior.
+file(READ "${GDX_PORT_DIR}/n64_sched.c" _gdx_sched_source)
+set(_gdx_dbg_logf_old [=[
+void gdx_dbg_logf(const char* fmt, ...) {
+    va_list args;
+]=])
+set(_gdx_dbg_logf_quest [=[
+void gdx_dbg_logf(const char* fmt, ...) {
+    if ((fmt != NULL) && (strncmp(fmt, "[audio-probe]", 13) == 0)) {
+        return;
+    }
+    va_list args;
+]=])
+if(_gdx_sched_source MATCHES "void gdx_dbg_logf\\(const char\\* fmt")
+    string(REPLACE "${_gdx_dbg_logf_old}" "${_gdx_dbg_logf_quest}" _gdx_sched_source "${_gdx_sched_source}")
+    file(WRITE "${GDX_PORT_DIR}/n64_sched.c" "${_gdx_sched_source}")
+endif()
+
 add_library(gdiffuser_game OBJECT
     ${GDX_GAME_SOURCES}
     "${GDX_QUEST_DECOMP_PORT}"
@@ -70,6 +92,7 @@ add_library(gdiffuser_game OBJECT
     "${GDX_QUEST_RACE}"
     "${GDX_QUEST_BACKGROUND}"
     "${GDX_QUEST_CAMERA}"
+    "${GDX_QUEST_COURSE}"
     "${GDX_QUEST_RACER}"
     "${GDX_QUEST_SYS_MAIN}"
     "${CMAKE_CURRENT_SOURCE_DIR}/quest_audio_fontconv.c"
@@ -107,13 +130,13 @@ target_compile_definitions(gdiffuser_game PRIVATE
     GDX_QUEST_VR=1
 )
 
-# Preserve the decomp's host-port assumptions from upstream. These flags are important at -O2:
+# Preserve the decomp's host-port assumptions from upstream. These flags remain required at -O3:
 # the original C relies heavily on aliasing and wrapping arithmetic semantics.
 target_compile_options(gdiffuser_game PRIVATE
     # Gradle's debug variant otherwise compiles the entire N64 simulation/decomp at -O0. Quest
     # needs debug symbols/installability, not unoptimized execution. Keep the decomp's alias/wrap
     # safety flags below and explicitly optimize this hot object library like the desktop port.
-    -O2
+    -O3
     -include
     "${CMAKE_CURRENT_SOURCE_DIR}/gdx_android_compat/gdx_android_libc_compat.h"
     # Bionic's fortified bzero macro uses Clang overloads and turns the decomp's

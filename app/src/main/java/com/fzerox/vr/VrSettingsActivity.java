@@ -37,20 +37,22 @@ public final class VrSettingsActivity extends Activity {
 
     private void loadPreferences() {
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        int hz = prefs.getInt(KEY_REFRESH, 72);
-        if (hz == 80) refreshGroup.check(R.id.refresh_80);
+        int hz = prefs.getInt(KEY_REFRESH, 90);
+        if (hz == 72) refreshGroup.check(R.id.refresh_72);
+        else if (hz == 80) refreshGroup.check(R.id.refresh_80);
         else if (hz == 90) refreshGroup.check(R.id.refresh_90);
         else if (hz == 120) refreshGroup.check(R.id.refresh_120);
-        else refreshGroup.check(R.id.refresh_72);
+        else refreshGroup.check(R.id.refresh_90);
         startDiorama.setChecked(prefs.getBoolean(KEY_DIORAMA, false));
     }
 
     private int selectedRefreshRate() {
         int id = refreshGroup.getCheckedRadioButtonId();
+        if (id == R.id.refresh_72) return 72;
         if (id == R.id.refresh_80) return 80;
         if (id == R.id.refresh_90) return 90;
         if (id == R.id.refresh_120) return 120;
-        return 72;
+        return 90;
     }
 
     private void saveAndClose() {

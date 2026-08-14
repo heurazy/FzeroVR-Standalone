@@ -13,6 +13,19 @@
 
 namespace {
 constexpr const char* kTag = "FZeroXVR/OpenXR";
+// Visual-quality floor established by the Quest 3 runtime during the validated pre-optimization
+// builds. Some runtime states now advertise a much smaller 1680x1760 recommendation; do not let a
+// transient recommendation silently lower image quality. Always respect OpenXR's reported maximum.
+constexpr uint32_t kMinQuestEyeWidth = 2800;
+constexpr uint32_t kMinQuestEyeHeight = 2933;
+
+uint32_t SelectEyeWidth(const XrViewConfigurationView& view) {
+    return std::min(std::max(view.recommendedImageRectWidth, kMinQuestEyeWidth), view.maxImageRectWidth);
+}
+
+uint32_t SelectEyeHeight(const XrViewConfigurationView& view) {
+    return std::min(std::max(view.recommendedImageRectHeight, kMinQuestEyeHeight), view.maxImageRectHeight);
+}
 
 bool XrOk(XrResult result, const char* what) {
     if (XR_FAILED(result)) {
@@ -32,12 +45,12 @@ bool EglOk(const char* what) {
 }
 
 float LoadTargetRefreshHz(const char* filesDir) {
-    if (filesDir == nullptr || filesDir[0] == '\0') return 72.0f;
+    if (filesDir == nullptr || filesDir[0] == '\0') return 90.0f;
     char path[1024]{};
     std::snprintf(path, sizeof(path), "%s/vr_settings.cfg", filesDir);
     FILE* file = std::fopen(path, "rb");
-    if (file == nullptr) return 72.0f;
-    float target = 72.0f;
+    if (file == nullptr) return 90.0f;
+    float target = 90.0f;
     char line[128]{};
     while (std::fgets(line, sizeof(line), file) != nullptr) {
         float parsed = 0.0f;
@@ -336,9 +349,9 @@ bool OpenXRContext::CreateEgl() {
             pbufferHeight = 1;
             for (const auto& view : configs) {
                 pbufferWidth = std::max<EGLint>(pbufferWidth,
-                                                static_cast<EGLint>(view.recommendedImageRectWidth));
+                                                static_cast<EGLint>(SelectEyeWidth(view)));
                 pbufferHeight = std::max<EGLint>(pbufferHeight,
-                                                 static_cast<EGLint>(view.recommendedImageRectHeight));
+                                                 static_cast<EGLint>(SelectEyeHeight(view)));
             }
         }
     }
@@ -543,8 +556,16 @@ bool OpenXRContext::CreateSwapchains() {
     views_.assign(viewCount, {XR_TYPE_VIEW});
     for (uint32_t i = 0; i < viewCount; ++i) {
         EyeSwapchain& eye = swapchains_[i];
-        eye.width = viewConfigs_[i].recommendedImageRectWidth;
-        eye.height = viewConfigs_[i].recommendedImageRectHeight;
+        eye.width = SelectEyeWidth(viewConfigs_[i]);
+        eye.height = SelectEyeHeight(viewConfigs_[i]);
+        __android_log_print(ANDROID_LOG_INFO, kTag,
+                            "eye %u extent recommended=%ux%u max=%ux%u selected=%ux%u",
+                            i,
+                            viewConfigs_[i].recommendedImageRectWidth,
+                            viewConfigs_[i].recommendedImageRectHeight,
+                            viewConfigs_[i].maxImageRectWidth,
+                            viewConfigs_[i].maxImageRectHeight,
+                            eye.width, eye.height);
 
         XrSwapchainCreateInfoFoveationFB foveationCreate{XR_TYPE_SWAPCHAIN_CREATE_INFO_FOVEATION_FB};
         foveationCreate.flags = XR_SWAPCHAIN_CREATE_FOVEATION_SCALED_BIN_BIT_FB;

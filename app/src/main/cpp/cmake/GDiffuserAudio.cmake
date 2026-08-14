@@ -16,4 +16,6 @@ add_library(cxd4_rsp STATIC
 set_target_properties(cxd4_rsp PROPERTIES POSITION_INDEPENDENT_CODE ON C_STANDARD 11)
 target_include_directories(cxd4_rsp PUBLIC "${GDX_CXD4_DIR}")
 target_compile_definitions(cxd4_rsp PRIVATE SP_EXECUTE_LOG=1 _CRT_SECURE_NO_WARNINGS=1)
-target_compile_options(cxd4_rsp PRIVATE -w -fno-strict-aliasing -fwrapv)
+# The debug APK otherwise leaves the instruction-by-instruction LLE RSP interpreter at -O0.
+# Audio runs continuously, so optimize this hot core while preserving its alias/wrap semantics.
+target_compile_options(cxd4_rsp PRIVATE -O3 -w -fno-strict-aliasing -fwrapv)

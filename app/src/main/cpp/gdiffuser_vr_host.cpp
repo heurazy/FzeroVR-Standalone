@@ -15,7 +15,7 @@
 #include "resource/ResourceFactories.h"
 #include "gdx_camera_pose.h"
 #include "gdx_dev_gates.h"
-#include "gdx_perf.h"
+#include "diorama_course_culling.h"
 #include "fzx_game.h"
 
 #include <algorithm>
@@ -34,6 +34,12 @@
 
 namespace Fast {
 extern void GfxSetInstance(std::shared_ptr<Interpreter> gfx);
+}
+
+extern "C" {
+// Fast3D reads this directly in its per-vertex aspect helper. A plain load avoids an out-of-line
+// host callback for every transformed vertex while preserving the exact same VR/non-VR decision.
+int gdx_vr_fast3d_eye_active_flag = 0;
 }
 
 namespace {
@@ -158,6 +164,47 @@ XrQuaternionf gVrCenterHeadOrientation{0,0,0,1};
 XrVector3f gVrCenterHeadPosition{0,0,0};
 GdxCameraPose gVrCenterPose{};
 bool gVrCenterPoseValid=false;
+struct CourseCullState {
+    bool valid=false;
+    Vec3 eye{};
+    Vec3 forward{};
+    Vec3 right{};
+    Vec3 up{};
+    float tanX=1.0f;
+    float tanY=1.0f;
+};
+CourseCullState gCourseCullState{};
+struct DioramaSortState {
+    bool valid=false;
+    bool dirty=true;
+    std::array<float,16> gameToEye{};
+};
+DioramaSortState gDioramaSortState{};
+struct VrCameraBasisCache {
+    uint64_t generation=0;
+    GdxCameraPose pose{};
+    Vec3 gameEye{};
+    Vec3 baseForward{};
+    Vec3 baseUp{};
+    Vec3 baseRight{};
+    Vec3 worldForward{};
+    Vec3 worldUp{};
+    Vec3 worldRight{};
+    float lookDistance=1.0f;
+    XrQuaternionf currentHead{0,0,0,1};
+};
+VrCameraBasisCache gVrCameraBasisCache{};
+uint64_t gVrMatrixGeneration=1;
+struct XrProjectionCache {
+    bool valid=false;
+    float l=0.0f;
+    float r=0.0f;
+    float d=0.0f;
+    float u=0.0f;
+    float w=0.0f;
+    float h=0.0f;
+};
+XrProjectionCache gXrProjectionCache[2]{};
 // Fast3D-native VR override, modelled after mario64VRStandalone: the interpreter keeps the game's
 // model-view stack but substitutes this per-eye combined view-projection only when a 3D eye replay
 // is active. This bypasses G-Diffuser's converted/scratch G_MTX pointer indirection entirely.
@@ -190,6 +237,8 @@ GLuint gHudTexture=0;
 GLuint gHudMatteTextures[2]={0,0};
 GLuint gHudCompositeProgram=0;
 GLuint gHudCompositeVao=0;
+GLint gHudBlackSampler=-1;
+GLint gHudWhiteSampler=-1;
 uint32_t gHudTextureWidth=0;
 uint32_t gHudTextureHeight=0;
 bool gHudValid=false;
@@ -219,19 +268,6 @@ void QuestPortLogTap(const char* message) {
         __android_log_write(ANDROID_LOG_INFO, "FZeroXVR/GDX", message);
     }
 }
-
-using PerfClock = std::chrono::steady_clock;
-PerfClock::time_point gPerfWindowStart = PerfClock::now();
-uint64_t gPerfTicks = 0;
-uint64_t gPerfRenderCalls = 0;
-double gPerfTickMs = 0.0;
-double gPerfInputMs = 0.0;
-double gPerfFixedAspectMs = 0.0;
-double gPerfViMs = 0.0;
-double gPerfDrainMs = 0.0;
-double gPerfDispatchMs = 0.0;
-double gPerfEyeRunMs[2] = {0.0, 0.0};
-double gPerfCopyMs[2] = {0.0, 0.0};
 
 struct FastReplayState {
     Fast::RSP rsp{};
@@ -263,18 +299,24 @@ void RestoreReplayState(const std::shared_ptr<Fast::Interpreter>& interp,const F
 
 void EnsureCache(int eye, uint32_t width, uint32_t height) {
     if (eye<0 || eye>1) return;
-    if (!gCacheTextures[eye]) glGenTextures(1,&gCacheTextures[eye]);
-    glBindTexture(GL_TEXTURE_2D,gCacheTextures[eye]);
-    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
-    if (gCacheWidth[eye]!=width || gCacheHeight[eye]!=height) {
-        glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,static_cast<GLsizei>(width),static_cast<GLsizei>(height),0,
-                     GL_RGBA,GL_UNSIGNED_BYTE,nullptr);
-        gCacheWidth[eye]=width; gCacheHeight[eye]=height; gCacheValid[eye]=false;
+    const bool create=(gCacheTextures[eye]==0);
+    const bool resize=(gCacheWidth[eye]!=width || gCacheHeight[eye]!=height);
+    if (create) glGenTextures(1,&gCacheTextures[eye]);
+    if (create || resize) {
+        glBindTexture(GL_TEXTURE_2D,gCacheTextures[eye]);
+        if (create) {
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        }
+        if (resize) {
+            glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA8,static_cast<GLsizei>(width),static_cast<GLsizei>(height),0,
+                         GL_RGBA,GL_UNSIGNED_BYTE,nullptr);
+            gCacheWidth[eye]=width; gCacheHeight[eye]=height; gCacheValid[eye]=false;
+        }
+        glBindTexture(GL_TEXTURE_2D,0);
     }
-    glBindTexture(GL_TEXTURE_2D,0);
     if (!gReadFbo) glGenFramebuffers(1,&gReadFbo);
     if (!gDrawFbo) glGenFramebuffers(1,&gDrawFbo);
 }
@@ -352,6 +394,8 @@ void main() {
         return false;
     }
     glGenVertexArrays(1,&gHudCompositeVao);
+    gHudBlackSampler=glGetUniformLocation(gHudCompositeProgram,"uBlack");
+    gHudWhiteSampler=glGetUniformLocation(gHudCompositeProgram,"uWhite");
     return true;
 }
 
@@ -368,7 +412,8 @@ void ConfigureHudTexture(GLuint texture,uint32_t width,uint32_t height,bool allo
 }
 
 void EnsureHudTexture(uint32_t width, uint32_t height) {
-    if (!gHudTexture) glGenTextures(1,&gHudTexture);
+    const bool createHud=(gHudTexture==0);
+    if (createHud) glGenTextures(1,&gHudTexture);
     const bool createMattes=(gHudMatteTextures[0]==0 || gHudMatteTextures[1]==0);
     if (createMattes) {
         if (gHudMatteTextures[0] || gHudMatteTextures[1]) {
@@ -378,10 +423,12 @@ void EnsureHudTexture(uint32_t width, uint32_t height) {
         glGenTextures(2,gHudMatteTextures);
     }
     const bool resize=(gHudTextureWidth!=width || gHudTextureHeight!=height);
-    ConfigureHudTexture(gHudTexture,width,height,resize);
-    ConfigureHudTexture(gHudMatteTextures[0],width,height,resize || createMattes);
-    ConfigureHudTexture(gHudMatteTextures[1],width,height,resize || createMattes);
-    glBindTexture(GL_TEXTURE_2D,0);
+    if (createHud || resize) ConfigureHudTexture(gHudTexture,width,height,true);
+    if (createMattes || resize) {
+        ConfigureHudTexture(gHudMatteTextures[0],width,height,true);
+        ConfigureHudTexture(gHudMatteTextures[1],width,height,true);
+    }
+    if (createHud || createMattes || resize) glBindTexture(GL_TEXTURE_2D,0);
     if (resize) {
         gHudTextureWidth=width;
         gHudTextureHeight=height;
@@ -417,10 +464,10 @@ bool CompositeHudMattes(uint32_t width,uint32_t height) {
     glBindVertexArray(gHudCompositeVao);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D,gHudMatteTextures[0]);
-    glUniform1i(glGetUniformLocation(gHudCompositeProgram,"uBlack"),0);
+    glUniform1i(gHudBlackSampler,0);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D,gHudMatteTextures[1]);
-    glUniform1i(glGetUniformLocation(gHudCompositeProgram,"uWhite"),1);
+    glUniform1i(gHudWhiteSampler,1);
     glDrawArrays(GL_TRIANGLES,0,3);
     glBindTexture(GL_TEXTURE_2D,0);
     glActiveTexture(GL_TEXTURE0);
@@ -434,28 +481,6 @@ bool CompositeHudMattes(uint32_t width,uint32_t height) {
     if (oldBlend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
     if (oldDepth) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
     return true;
-}
-
-void LogHudAlphaProbeOnce() {
-    static bool logged=false;
-    if (logged || !gHudTexture || !gReadFbo || gHudTextureWidth<4 || gHudTextureHeight<4) return;
-    logged=true;
-    GLint oldRead=0;
-    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING,&oldRead);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER,gReadFbo);
-    glFramebufferTexture2D(GL_READ_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,gHudTexture,0);
-    if (glCheckFramebufferStatus(GL_READ_FRAMEBUFFER)==GL_FRAMEBUFFER_COMPLETE) {
-        const GLint pts[5][2]={{2,2},{static_cast<GLint>(gHudTextureWidth)-3,2},
-                               {2,static_cast<GLint>(gHudTextureHeight)-3},
-                               {static_cast<GLint>(gHudTextureWidth)-3,static_cast<GLint>(gHudTextureHeight)-3},
-                               {static_cast<GLint>(gHudTextureWidth/2),static_cast<GLint>(gHudTextureHeight/2)}};
-        uint8_t px[5][4]{};
-        for (int i=0;i<5;++i) glReadPixels(pts[i][0],pts[i][1],1,1,GL_RGBA,GL_UNSIGNED_BYTE,px[i]);
-        __android_log_print(ANDROID_LOG_INFO,kTag,
-                            "HUD alpha probe corners=%u,%u,%u,%u center=%u rgb0=%u/%u/%u",
-                            px[0][3],px[1][3],px[2][3],px[3][3],px[4][3],px[0][0],px[0][1],px[0][2]);
-    }
-    glBindFramebuffer(GL_READ_FRAMEBUFFER,static_cast<GLuint>(oldRead));
 }
 
 void ClearRenderTargetTransparent(GLuint texture, uint32_t width, uint32_t height) {
@@ -643,6 +668,53 @@ Vec3 MapHeadLocalToGame(Vec3 local, Vec3 right, Vec3 up, Vec3 forward) {
     return Add(Add(Mul(right,local.x),Mul(up,local.y)),Mul(forward,-local.z));
 }
 
+void RebuildCourseCullState() {
+    gCourseCullState.valid=false;
+    if (!gEyesValid || !gVrCenterPoseValid || !gRaceTrackingActive || gDioramaEnabled) return;
+
+    const GdxCameraPose& pose=gVrCenterPose;
+    const Vec3 gameEye{pose.eyeX,pose.eyeY,pose.eyeZ};
+    const Vec3 gameAt{pose.atX,pose.atY,pose.atZ};
+    const Vec3 baseForward=Normalize(Sub(gameAt,gameEye));
+    Vec3 baseUp=Normalize(Vec3{pose.upX,pose.upY,pose.upZ});
+    Vec3 baseRight=Normalize(Cross(baseForward,baseUp));
+    baseUp=Normalize(Cross(baseRight,baseForward));
+
+    const XrQuaternionf relOrientation=QMul(Conjugate(gRaceBaseOrientation),gVrCenterHeadOrientation);
+    const Vec3 localForward=QRotate(relOrientation,{0,0,-1});
+    const Vec3 localUp=QRotate(relOrientation,{0,1,0});
+    const Vec3 worldForward=Normalize(MapHeadLocalToGame(localForward,baseRight,baseUp,baseForward));
+    Vec3 worldUp=Normalize(MapHeadLocalToGame(localUp,baseRight,baseUp,baseForward));
+    const Vec3 worldRight=Normalize(Cross(worldForward,worldUp));
+    worldUp=Normalize(Cross(worldRight,worldForward));
+
+    const XrVector3f centerDeltaWorld{
+        gVrCenterHeadPosition.x-gRaceBasePosition.x,
+        gVrCenterHeadPosition.y-gRaceBasePosition.y,
+        gVrCenterHeadPosition.z-gRaceBasePosition.z};
+    const Vec3 centerDeltaLocal=QRotate(Conjugate(gRaceBaseOrientation),
+                                        {centerDeltaWorld.x,centerDeltaWorld.y,centerDeltaWorld.z});
+    const Vec3 centerOffsetGame=Mul(MapHeadLocalToGame(centerDeltaLocal,baseRight,baseUp,baseForward),
+                                    kHeadMetersToGameUnits);
+
+    float tanX=1.0f;
+    float tanY=1.0f;
+    for (int i=0;i<2;++i) {
+        tanX=std::max(tanX,std::fabs(std::tan(gEyes[i].xrFov.angleLeft)));
+        tanX=std::max(tanX,std::fabs(std::tan(gEyes[i].xrFov.angleRight)));
+        tanY=std::max(tanY,std::fabs(std::tan(gEyes[i].xrFov.angleUp)));
+        tanY=std::max(tanY,std::fabs(std::tan(gEyes[i].xrFov.angleDown)));
+    }
+
+    gCourseCullState.eye=Add(gameEye,centerOffsetGame);
+    gCourseCullState.forward=worldForward;
+    gCourseCullState.right=worldRight;
+    gCourseCullState.up=worldUp;
+    gCourseCullState.tanX=tanX;
+    gCourseCullState.tanY=tanY;
+    gCourseCullState.valid=true;
+}
+
 void MatMul4(std::array<float,16>& out,const std::array<float,16>& a,const std::array<float,16>& b) {
     std::array<float,16> tmp{};
     for (int i=0;i<4;++i) {
@@ -670,19 +742,29 @@ bool BuildLookAtRowMajor(std::array<float,16>& out,Vec3 eye,Vec3 at,Vec3 up) {
     return true;
 }
 
-bool BuildOpenXrProjection(std::array<float,16>& out,const XrFovf& fov,float zn,float zf) {
-    const float l=std::tan(fov.angleLeft), r=std::tan(fov.angleRight);
-    const float d=std::tan(fov.angleDown), u=std::tan(fov.angleUp);
-    const float w=r-l, h=u-d;
-    if (!(w>1e-5f) || !(h>1e-5f)) return false;
+bool BuildOpenXrProjection(std::array<float,16>& out,int eyeIndex,float zn,float zf) {
+    if (!gEyesValid || eyeIndex<0 || eyeIndex>1) return false;
+    XrProjectionCache& c=gXrProjectionCache[eyeIndex];
+    if (!c.valid) {
+        const XrFovf& fov=gEyes[eyeIndex].xrFov;
+        c.l=std::tan(fov.angleLeft);
+        c.r=std::tan(fov.angleRight);
+        c.d=std::tan(fov.angleDown);
+        c.u=std::tan(fov.angleUp);
+        c.w=c.r-c.l;
+        c.h=c.u-c.d;
+        c.valid=(c.w>1e-5f) && (c.h>1e-5f);
+    }
+    if (!c.valid) return false;
     zn=std::max(zn,0.01f);
     zf=std::max(zf,zn+1.0f);
     out={};
-    // Same row-vector/OpenGL [-1,+1] projection used by mario64VRStandalone.
-    out[0*4+0]=2.0f/w;
-    out[1*4+1]=2.0f/h;
-    out[2*4+0]=(r+l)/w;
-    out[2*4+1]=(u+d)/h;
+    // Same row-vector/OpenGL [-1,+1] projection used by mario64VRStandalone. FOV tangents are
+    // cached per xrLocateViews result; only near/far terms differ between WORLD and SKY.
+    out[0*4+0]=2.0f/c.w;
+    out[1*4+1]=2.0f/c.h;
+    out[2*4+0]=(c.r+c.l)/c.w;
+    out[2*4+1]=(c.u+c.d)/c.h;
     out[2*4+2]=-(zf+zn)/(zf-zn);
     out[2*4+3]=-1.0f;
     out[3*4+2]=-(2.0f*zf*zn)/(zf-zn);
@@ -731,12 +813,12 @@ void CaptureDioramaAnchor() {
                         kDioramaScaleGameUnitsPerMeter,kDioramaDistanceMeters,kDioramaHeightMeters);
 }
 
-bool BuildDioramaWorldMatrix(int eyeIndex,std::array<float,16>& out) {
+bool BuildDioramaGameToEye(int eyeIndex,std::array<float,16>& out) {
     if (!gEyesValid || !gVrCenterPoseValid || eyeIndex<0 || eyeIndex>1) return false;
     if (!gDioramaAnchorValid) CaptureDioramaAnchor();
 
     const GdxCameraPose& pose=gVrCenterPose;
-    std::array<float,16> gameView{}, anchor{}, eyeView{}, projection{};
+    std::array<float,16> gameView{}, anchor{}, eyeView{};
     if (!BuildLookAtRowMajor(gameView,
                              {pose.eyeX,pose.eyeY,pose.eyeZ},
                              {pose.atX,pose.atY,pose.atZ},
@@ -760,7 +842,6 @@ bool BuildDioramaWorldMatrix(int eyeIndex,std::array<float,16>& out) {
 
     const HostEye& e=gEyes[eyeIndex];
     BuildXrView(eyeView,e.xrPose);
-    if (!BuildOpenXrProjection(projection,e.xrFov,0.02f,100.0f)) return false;
 
     // Strengthen only binocular disparity for the miniature world. Keep the actual OpenXR eye pose
     // untouched for composition/timewarp; like Mario's stereo comfort path, counter-translate the
@@ -789,38 +870,64 @@ bool BuildDioramaWorldMatrix(int eyeIndex,std::array<float,16>& out) {
     trackingComp[13]=e.xrPose.position.y-desiredEye.y;
     trackingComp[14]=e.xrPose.position.z-desiredEye.z;
 
-    std::array<float,16> gameToLocal{}, trackedLocal{}, gameToEye{};
+    std::array<float,16> gameToLocal{}, trackedLocal{};
     MatMul4(gameToLocal,gameView,anchor);
     MatMul4(trackedLocal,gameToLocal,trackingComp);
-    MatMul4(gameToEye,trackedLocal,eyeView);
+    MatMul4(out,trackedLocal,eyeView);
+    return true;
+}
+
+bool BuildDioramaWorldMatrix(int eyeIndex,std::array<float,16>& out) {
+    std::array<float,16> gameToEye{}, projection{};
+    if (!BuildDioramaGameToEye(eyeIndex,gameToEye)) return false;
+    if (!BuildOpenXrProjection(projection,eyeIndex,0.02f,100.0f)) return false;
     MatMul4(out,gameToEye,projection);
     return true;
 }
 
+bool GetVrCameraBasis(VrCameraBasisCache*& out) {
+    if (!gEyesValid || !gVrCenterPoseValid) return false;
+    if (gVrCameraBasisCache.generation != gVrMatrixGeneration) {
+        auto& c=gVrCameraBasisCache;
+        c.pose=gVrCenterPose; // always the untouched F-Zero chase camera
+        c.gameEye={c.pose.eyeX,c.pose.eyeY,c.pose.eyeZ};
+        const Vec3 gameAt{c.pose.atX,c.pose.atY,c.pose.atZ};
+        c.baseForward=Normalize(Sub(gameAt,c.gameEye));
+        c.baseUp=Normalize(Vec3{c.pose.upX,c.pose.upY,c.pose.upZ});
+        c.baseRight=Normalize(Cross(c.baseForward,c.baseUp));
+        c.baseUp=Normalize(Cross(c.baseRight,c.baseForward));
+        c.lookDistance=std::max(Length(Sub(gameAt,c.gameEye)),1.0f);
+
+        // Render-only tracking, matching mario64VRStandalone's model: gameplay/culling keep the
+        // native game camera while physical HMD orientation affects only the render basis.
+        c.currentHead=gVrCenterHeadOrientation;
+        const XrQuaternionf relOrientation=QMul(Conjugate(gRaceBaseOrientation),c.currentHead);
+        const Vec3 localForward=QRotate(relOrientation,{0,0,-1});
+        const Vec3 localUp=QRotate(relOrientation,{0,1,0});
+        c.worldForward=Normalize(MapHeadLocalToGame(localForward,c.baseRight,c.baseUp,c.baseForward));
+        c.worldUp=Normalize(MapHeadLocalToGame(localUp,c.baseRight,c.baseUp,c.baseForward));
+        c.worldRight=Normalize(Cross(c.worldForward,c.worldUp));
+        c.worldUp=Normalize(Cross(c.worldRight,c.worldForward));
+        c.generation=gVrMatrixGeneration;
+    }
+    out=&gVrCameraBasisCache;
+    return true;
+}
+
 bool BuildVrCameraMatrix(int eyeIndex, bool skyOnly, std::array<float,16>& out) {
-    if (!gEyesValid || !gVrCenterPoseValid || eyeIndex<0 || eyeIndex>1) return false;
-    GdxCameraPose pose=gVrCenterPose; // always the untouched F-Zero chase camera
-
-    const Vec3 gameEye{pose.eyeX,pose.eyeY,pose.eyeZ};
-    const Vec3 gameAt{pose.atX,pose.atY,pose.atZ};
-    const Vec3 baseForward=Normalize(Sub(gameAt,gameEye));
-    Vec3 baseUp=Normalize(Vec3{pose.upX,pose.upY,pose.upZ});
-    Vec3 baseRight=Normalize(Cross(baseForward,baseUp));
-    baseUp=Normalize(Cross(baseRight,baseForward));
-    const float lookDistance=std::max(Length(Sub(gameAt,gameEye)),1.0f);
-
-    // Render-only tracking, matching mario64VRStandalone's model: gameplay/culling keep the native
-    // game camera, while the physical HMD pose is composed only into the eye view used for vertices.
-    // This avoids mutating gCameras and then asking the OpenXR compositor to timewarp a different
-    // virtual camera, which was the source of the rubber/deformed view.
-    const XrQuaternionf currentHead=gVrCenterHeadOrientation;
-    const XrQuaternionf relOrientation=QMul(Conjugate(gRaceBaseOrientation),currentHead);
-    const Vec3 localForward=QRotate(relOrientation,{0,0,-1});
-    const Vec3 localUp=QRotate(relOrientation,{0,1,0});
-    const Vec3 worldForward=Normalize(MapHeadLocalToGame(localForward,baseRight,baseUp,baseForward));
-    Vec3 worldUp=Normalize(MapHeadLocalToGame(localUp,baseRight,baseUp,baseForward));
-    Vec3 worldRight=Normalize(Cross(worldForward,worldUp));
-    worldUp=Normalize(Cross(worldRight,worldForward));
+    if (eyeIndex<0 || eyeIndex>1) return false;
+    VrCameraBasisCache* basis=nullptr;
+    if (!GetVrCameraBasis(basis) || basis==nullptr) return false;
+    const GdxCameraPose& pose=basis->pose;
+    const Vec3 gameEye=basis->gameEye;
+    const Vec3 baseForward=basis->baseForward;
+    const Vec3 baseUp=basis->baseUp;
+    const Vec3 baseRight=basis->baseRight;
+    const float lookDistance=basis->lookDistance;
+    const XrQuaternionf currentHead=basis->currentHead;
+    const Vec3 worldForward=basis->worldForward;
+    const Vec3 worldUp=basis->worldUp;
+    const Vec3 worldRight=basis->worldRight;
 
     Vec3 vrEye=gameEye;
     if (!skyOnly) {
@@ -870,10 +977,9 @@ bool BuildVrCameraMatrix(int eyeIndex, bool skyOnly, std::array<float,16>& out) 
     std::array<float,16> view{};
     std::array<float,16> projection{};
     if (!BuildLookAtRowMajor(view,vrEye,vrAt,worldUp)) return false;
-    const HostEye& e=gEyes[eyeIndex];
     const float nearZ=skyOnly ? 1.0f : std::max(pose.nearZ,0.1f);
     const float farZ=skyOnly ? 50000.0f : std::max(pose.farZ,nearZ+100.0f);
-    if (!BuildOpenXrProjection(projection,e.xrFov,nearZ,farZ)) return false;
+    if (!BuildOpenXrProjection(projection,eyeIndex,nearZ,farZ)) return false;
     MatMul4(out,view,projection);
     return true;
 }
@@ -884,10 +990,12 @@ bool ActivateFastVrEye(int eyeIndex) {
         : BuildVrCameraMatrix(eyeIndex,false,gFastVrWorldMatrix);
     if (!worldOk || !BuildVrCameraMatrix(eyeIndex,true,gFastVrSkyMatrix)) {
         gFastVrEyeActive=false;
+        gdx_vr_fast3d_eye_active_flag=0;
         gFastVrSection=FastVrSection::Off;
         return false;
     }
     gFastVrEyeActive=true;
+    gdx_vr_fast3d_eye_active_flag=1;
     gFastVrEyeIndex=eyeIndex;
     gFastVrSection=FastVrSection::Off; // VRSK/VR3D tags switch sections during this single Run().
     return true;
@@ -895,6 +1003,7 @@ bool ActivateFastVrEye(int eyeIndex) {
 
 void DeactivateFastVrEye() {
     gFastVrEyeActive=false;
+    gdx_vr_fast3d_eye_active_flag=0;
     gFastVrEyeIndex=-1;
     gFastVrSection=FastVrSection::Off;
 }
@@ -946,7 +1055,6 @@ void gdx_rdram_init(void);
 void gdx_init_rom(int argc,char** argv,int archivesValidated);
 void gdx_controller_poll(void);
 void gdx_fixed_aspect_tick(void);
-void gdx_dev_gates_refresh(void);
 void gdx_boot_warm_asset_segments(void);
 unsigned int gdx_segment_source_fallback_total(void);
 int GdxSegmentSourcePreload(uint32_t romBase);
@@ -997,6 +1105,12 @@ extern "C" int gdx_vr_host_apply_center_camera(GdxVrCameraIo* camera) {
     if (camera==nullptr || camera->id!=0 || !gEyesValid || !IsRaceVrMode(GET_MODE(gGameMode))) {
         gVrCenterPoseValid=false;
         gRaceTrackingActive=false;
+        gCourseCullState.valid=false;
+        gVrCameraBasisCache.generation=0;
+        ++gVrMatrixGeneration;
+        gXrProjectionCache[0].valid=gXrProjectionCache[1].valid=false;
+        gDioramaSortState.valid=false;
+        gDioramaSortState.dirty=true;
         return 0;
     }
 
@@ -1034,71 +1148,58 @@ extern "C" int gdx_vr_host_apply_center_camera(GdxVrCameraIo* camera) {
     gVrCenterPose.id=camera->id;
     gVrCenterPose.valid=1;
     gVrCenterPoseValid=true;
+    ++gVrMatrixGeneration;
+    RebuildCourseCullState();
+    gDioramaSortState.dirty=true;
 
     // Returning 0 deliberately tells camera_quest.c NOT to mutate the game camera.
     return 0;
 }
 
-extern "C" int gdx_vr_host_course_chunk_visible(float x,float y,float z,float depth,float farDistance) {
-    // Diorama mode can show the miniature from much wider angles around the table. Keep the old
-    // conservative radial behaviour there; the performance-critical normal chase-camera mode uses
-    // a true HMD-oriented frustum below.
-    if (!gEyesValid || !gVrCenterPoseValid || !gRaceTrackingActive || gDioramaEnabled) {
+extern "C" int gdx_vr_host_course_chunk_query(float x,float y,float z,float depth,float farDistance,float* sortDepth) {
+    if (sortDepth!=nullptr) *sortDepth=depth;
+
+    // Diorama keeps every chunk already streamed by Course_SegmentsInit (the proven no-hole path),
+    // but its painter sorting must use the ACTUAL miniature eye rather than the native chase-camera
+    // depth. Build the exact game->eye matrix used by the diorama renderer once per pose update and
+    // convert eye-space metres back to F-Zero-like game units so the stock grouping thresholds keep
+    // their intended scale. OpenXR looks down -Z, hence the sign flip.
+    if (gDioramaEnabled) {
+        if (gDioramaSortState.dirty) {
+            gDioramaSortState.valid=BuildDioramaGameToEye(0,gDioramaSortState.gameToEye);
+            gDioramaSortState.dirty=false;
+        }
+        if (gDioramaSortState.valid && sortDepth!=nullptr) {
+            const auto& m=gDioramaSortState.gameToEye;
+            const float eyeZ=x*m[2]+y*m[6]+z*m[10]+m[14];
+            *sortDepth=(-eyeZ)*kDioramaScaleGameUnitsPerMeter;
+        }
+        return 1;
+    }
+
+    // Non-diorama fallback used only while tracking/camera state is not yet ready.
+    if (!gCourseCullState.valid) {
         return std::fabs(depth) <= std::max(farDistance,1.0f) ? 1 : 0;
     }
 
-    const GdxCameraPose& pose=gVrCenterPose;
-    const Vec3 gameEye{pose.eyeX,pose.eyeY,pose.eyeZ};
-    const Vec3 gameAt{pose.atX,pose.atY,pose.atZ};
-    const Vec3 baseForward=Normalize(Sub(gameAt,gameEye));
-    Vec3 baseUp=Normalize(Vec3{pose.upX,pose.upY,pose.upZ});
-    Vec3 baseRight=Normalize(Cross(baseForward,baseUp));
-    baseUp=Normalize(Cross(baseRight,baseForward));
-
-    const XrQuaternionf currentHead=gVrCenterHeadOrientation;
-    const XrQuaternionf relOrientation=QMul(Conjugate(gRaceBaseOrientation),currentHead);
-    const Vec3 localForward=QRotate(relOrientation,{0,0,-1});
-    const Vec3 localUp=QRotate(relOrientation,{0,1,0});
-    const Vec3 worldForward=Normalize(MapHeadLocalToGame(localForward,baseRight,baseUp,baseForward));
-    Vec3 worldUp=Normalize(MapHeadLocalToGame(localUp,baseRight,baseUp,baseForward));
-    const Vec3 worldRight=Normalize(Cross(worldForward,worldUp));
-    worldUp=Normalize(Cross(worldRight,worldForward));
-
-    const XrVector3f centerDeltaWorld{
-        gVrCenterHeadPosition.x-gRaceBasePosition.x,
-        gVrCenterHeadPosition.y-gRaceBasePosition.y,
-        gVrCenterHeadPosition.z-gRaceBasePosition.z};
-    const Vec3 centerDeltaLocal=QRotate(Conjugate(gRaceBaseOrientation),
-                                        {centerDeltaWorld.x,centerDeltaWorld.y,centerDeltaWorld.z});
-    const Vec3 centerOffsetGame=Mul(MapHeadLocalToGame(centerDeltaLocal,baseRight,baseUp,baseForward),
-                                    kHeadMetersToGameUnits);
-    const Vec3 eye=Add(gameEye,centerOffsetGame);
-    const Vec3 toChunk=Sub(Vec3{x,y,z},eye);
-    const float forward=Dot(toChunk,worldForward);
-    const float side=std::fabs(Dot(toChunk,worldRight));
-    const float vertical=std::fabs(Dot(toChunk,worldUp));
+    const Vec3 toChunk=Sub(Vec3{x,y,z},gCourseCullState.eye);
+    const float forward=Dot(toChunk,gCourseCullState.forward);
+    const float side=std::fabs(Dot(toChunk,gCourseCullState.right));
+    const float vertical=std::fabs(Dot(toChunk,gCourseCullState.up));
     const float distance=Length(toChunk);
 
     // SegmentChunk positions are chunk centres, not bounding boxes. A generous world-space margin
     // keeps neighbouring geometry alive during fast head turns/leans while still rejecting the vast
-    // majority of the old 360-degree set. FOV is taken from both physical Quest eyes and widened by
-    // 25% so IPD, chunk extent and prediction error never cause visible edge popping.
+    // majority of the old 360-degree set. The cached FOV includes both physical Quest eyes and the
+    // same 25% safety margin used before this optimization.
     constexpr float kChunkMargin=700.0f;
     constexpr float kFrustumSafety=1.25f;
     const float farLimit=std::max(farDistance,1000.0f)+kChunkMargin;
     if (distance>farLimit || forward < -kChunkMargin) return 0;
 
-    float tanX=1.0f;
-    float tanY=1.0f;
-    for (int i=0;i<2;++i) {
-        tanX=std::max(tanX,std::fabs(std::tan(gEyes[i].xrFov.angleLeft)));
-        tanX=std::max(tanX,std::fabs(std::tan(gEyes[i].xrFov.angleRight)));
-        tanY=std::max(tanY,std::fabs(std::tan(gEyes[i].xrFov.angleUp)));
-        tanY=std::max(tanY,std::fabs(std::tan(gEyes[i].xrFov.angleDown)));
-    }
     const float projected=std::max(forward,0.0f);
-    if (side > projected*tanX*kFrustumSafety+kChunkMargin) return 0;
-    if (vertical > projected*tanY*kFrustumSafety+kChunkMargin) return 0;
+    if (side > projected*gCourseCullState.tanX*kFrustumSafety+kChunkMargin) return 0;
+    if (vertical > projected*gCourseCullState.tanY*kFrustumSafety+kChunkMargin) return 0;
     return 1;
 }
 
@@ -1118,10 +1219,11 @@ extern "C" int gdx_vr_host_bootstrap(const char* filesDir) {
     setenv("SHIP_HOME",filesDir,1);
     gdx_port_log_tap = &QuestPortLogTap;
     gdx_dev_gates_init_env();
-    // Keep lightweight periodic timing enabled, but never force the per-frame verbose families in
-    // normal Quest builds. gfxdiag/setup/segment spam was consuming a material part of the frame
-    // budget and made performance diagnostics themselves alter the result.
-    gdx_dev_gate_force(GDX_GATE_PERF, 1);
+    // Keep G-Diffuser's deep per-phase telemetry disabled on standalone Quest. It performs many
+    // clock reads, vector updates and audio-thread synchronization points every frame. The native
+    // OpenXR loop already reports FPS + average RenderFrame time every two seconds, which measures
+    // the real 72 Hz budget without perturbing the game/render hot paths.
+    gdx_dev_gate_force(GDX_GATE_PERF, 0);
 
     gContext=Ship::Context::CreateUninitializedInstance("F-Zero X VR","fzerox-vr","gdiffuser.cfg.json");
     auto& ctx=gContext;
@@ -1258,9 +1360,19 @@ extern "C" int gdx_vr_host_bootstrap(const char* filesDir) {
 }
 
 extern "C" void gdx_vr_host_set_stereo_views(const HostEye* eyes,int count) {
-    if (eyes==nullptr || count<2) { gEyesValid=false; return; }
+    if (eyes==nullptr || count<2) {
+        gEyesValid=false;
+        gCourseCullState.valid=false;
+        gVrCameraBasisCache.generation=0;
+        ++gVrMatrixGeneration;
+        gXrProjectionCache[0].valid=gXrProjectionCache[1].valid=false;
+        gDioramaSortState.valid=false;
+        gDioramaSortState.dirty=true;
+        return;
+    }
     gEyes[0]=eyes[0]; gEyes[1]=eyes[1];
     gEyesValid=true;
+    gXrProjectionCache[0].valid=gXrProjectionCache[1].valid=false;
 
     // xrLocateViews runs at the compositor's predicted display time (72 Hz on the current Quest
     // session). Publish the center-head pose HERE, not only from the 60 Hz game camera callback.
@@ -1271,6 +1383,8 @@ extern "C" void gdx_vr_host_set_stereo_views(const HostEye* eyes,int count) {
         0.5f*(gEyes[0].xrPose.position.x+gEyes[1].xrPose.position.x),
         0.5f*(gEyes[0].xrPose.position.y+gEyes[1].xrPose.position.y),
         0.5f*(gEyes[0].xrPose.position.z+gEyes[1].xrPose.position.z)};
+    ++gVrMatrixGeneration;
+    gDioramaSortState.dirty=true;
 
     // Keep Fast3D latched to the internal world resolution between game ticks. Publishing a new
     // 72 Hz OpenXR pose used to bounce the renderer back to full 2800x2933 before every 60 Hz task,
@@ -1297,71 +1411,28 @@ extern "C" void gdx_vr_host_tick(const void* inputRaw) {
     if (inRace && dioramaButtonDown && !gDioramaToggleWasDown) {
         gDioramaEnabled=!gDioramaEnabled;
         gDioramaAnchorValid=false;
+        gCourseCullState.valid=false;
+        gDioramaSortState.valid=false;
+        gDioramaSortState.dirty=true;
         __android_log_print(ANDROID_LOG_INFO,kTag,"Diorama camera %s",gDioramaEnabled ? "ENABLED" : "DISABLED");
     }
     gDioramaToggleWasDown=dioramaButtonDown;
     if (!inRace) {
         gRaceTrackingActive=false;
         gVrCenterPoseValid=false;
+        gCourseCullState.valid=false;
         gDioramaAnchorValid=false;
+        gDioramaSortState.valid=false;
+        gDioramaSortState.dirty=true;
     }
-    gdx::PerfFrameBegin();
-    gdx::PerfPhaseBegin(gdx::PerfGameTick);
-    const auto tickStart = PerfClock::now();
-    gdx_dev_gates_refresh();
-    auto stage = PerfClock::now();
+    // Standalone Quest has no live Dev Tools UI, so refreshing every CVar-backed diagnostic gate
+    // on every ~60 Hz game tick is pure overhead. Gates are initialized once during bootstrap.
     gdx_controller_poll();
-    auto next = PerfClock::now();
-    gPerfInputMs += std::chrono::duration<double, std::milli>(next - stage).count();
-    stage = next;
     gdx_fixed_aspect_tick();
-    next = PerfClock::now();
-    gPerfFixedAspectMs += std::chrono::duration<double, std::milli>(next - stage).count();
-    stage = next;
     gdx_vi_tick();
     gdx_audio_thread_notify_frame();
-    next = PerfClock::now();
-    gPerfViMs += std::chrono::duration<double, std::milli>(next - stage).count();
-    stage = next;
     gdx_sched_drain_deferred_wakes();
-    next = PerfClock::now();
-    gPerfDrainMs += std::chrono::duration<double, std::milli>(next - stage).count();
-    stage = next;
     gdx_dispatch();
-    const auto tickEnd = PerfClock::now();
-    gPerfDispatchMs += std::chrono::duration<double, std::milli>(tickEnd - stage).count();
-    gPerfTickMs += std::chrono::duration<double, std::milli>(tickEnd - tickStart).count();
-    gdx::PerfPhaseEnd(gdx::PerfGameTick);
-    gdx::PerfFrameEnd();
-    ++gPerfTicks;
-
-    const double seconds = std::chrono::duration<double>(tickEnd - gPerfWindowStart).count();
-    if (seconds >= 2.0) {
-        const double ticks = static_cast<double>(gPerfTicks);
-        const double renders = static_cast<double>(gPerfRenderCalls);
-        __android_log_print(ANDROID_LOG_INFO,"FZeroXVR/Perf",
-                            "game %.1f ticks/s avg %.2f ms [input %.2f aspect %.2f vi %.2f drain %.2f dispatch %.2f]; gfx %.1f calls/s eyeL %.2f ms eyeR %.2f ms copyL %.2f ms copyR %.2f ms rawFallback=%u",
-                            ticks / seconds,
-                            gPerfTicks ? gPerfTickMs / ticks : 0.0,
-                            gPerfTicks ? gPerfInputMs / ticks : 0.0,
-                            gPerfTicks ? gPerfFixedAspectMs / ticks : 0.0,
-                            gPerfTicks ? gPerfViMs / ticks : 0.0,
-                            gPerfTicks ? gPerfDrainMs / ticks : 0.0,
-                            gPerfTicks ? gPerfDispatchMs / ticks : 0.0,
-                            renders / seconds,
-                            gPerfRenderCalls ? gPerfEyeRunMs[0] / renders : 0.0,
-                            gPerfRenderCalls ? gPerfEyeRunMs[1] / renders : 0.0,
-                            gPerfRenderCalls ? gPerfCopyMs[0] / renders : 0.0,
-                            gPerfRenderCalls ? gPerfCopyMs[1] / renders : 0.0,
-                            gdx_segment_source_fallback_total());
-        gPerfWindowStart = tickEnd;
-        gPerfTicks = 0;
-        gPerfRenderCalls = 0;
-        gPerfTickMs = 0.0;
-        gPerfInputMs = gPerfFixedAspectMs = gPerfViMs = gPerfDrainMs = gPerfDispatchMs = 0.0;
-        gPerfEyeRunMs[0] = gPerfEyeRunMs[1] = 0.0;
-        gPerfCopyMs[0] = gPerfCopyMs[1] = 0.0;
-    }
 }
 
 extern "C" int gdx_vr_host_render_converted(void* interpreterRaw,void* convertedRaw,int taskVariant) {
@@ -1418,15 +1489,14 @@ extern "C" int gdx_vr_host_render_converted(void* interpreterRaw,void* converted
                                 hudMarker,ipd,ipd*kStereoMetersToGameUnits);
         }
 
-        thread_local std::vector<Fast::F3DGfx> worldCommands;
-        worldCommands.assign(fastCommands,fastCommands+hudMarker);
-        Fast::F3DGfx end{};
-        end.words.w0=static_cast<uintptr_t>(0xDFu)<<24; // F3DEX2 G_ENDDL
-        end.words.w1=0;
-        worldCommands.push_back(end);
+        // VRHD itself is a no-op delimiter. Turn that one command into G_ENDDL while replaying the
+        // world instead of copying every pre-HUD command into a temporary vector each graphics task.
+        // Restore it immediately after the stereo world passes so the converted task remains intact.
+        const Fast::F3DGfx savedHudMarker=fastCommands[hudMarker];
+        fastCommands[hudMarker].words.w0=static_cast<uintptr_t>(0xDFu)<<24; // F3DEX2 G_ENDDL
+        fastCommands[hudMarker].words.w1=0;
         Fast::F3DGfx* hudCommands=fastCommands+hudMarker+1;
 
-        ++gPerfRenderCalls;
         gHudValid=false;
 
         // Pass A: true stereo world through ONE task-prepared interpreter. Snapshot the logical
@@ -1455,16 +1525,12 @@ extern "C" int gdx_vr_host_render_converted(void* interpreterRaw,void* converted
             }
             Fast::GfxSetInstance(interp);
             gHudMatteClearMode=0;
-            const auto runStart=PerfClock::now();
             interp->StartFrame();
-            interp->Run(reinterpret_cast<Gfx*>(worldCommands.data()),{});
+            interp->Run(commands,{});
             DeactivateFastVrEye();
-            const auto runEnd=PerfClock::now();
             if (eye==0) worldEnd=CaptureReplayState(interp);
-            gPerfEyeRunMs[eye]+=std::chrono::duration<double,std::milli>(runEnd-runStart).count();
 
             const GLuint source=static_cast<GLuint>(interp->mGfxFrameBuffer);
-            const auto copyStart=PerfClock::now();
             const uint32_t cacheW=WorldRenderDim(gEyes[eye].width);
             const uint32_t cacheH=WorldRenderDim(gEyes[eye].height);
             EnsureCache(eye,cacheW,cacheH);
@@ -1482,10 +1548,9 @@ extern "C" int gdx_vr_host_render_converted(void* interpreterRaw,void* converted
                 gCacheRenderFov[eye]=gEyes[eye].xrFov;
                 gCacheRenderViewValid[eye]=true;
             }
-            const auto copyEnd=PerfClock::now();
-            gPerfCopyMs[eye]+=std::chrono::duration<double,std::milli>(copyEnd-copyStart).count();
             interp->EndFrame();
         }
+        fastCommands[hudMarker]=savedHudMarker;
         RestoreReplayState(leftInterp,worldEnd);
 
         // Pass B: reconstruct a real transparent HUD from black/white mattes. A nominally
@@ -1527,7 +1592,6 @@ extern "C" int gdx_vr_host_render_converted(void* interpreterRaw,void* converted
         gHudMatteClearMode=0;
         gHudValid=matteCopiesOk && CompositeHudMattes(kHudWidth,kHudHeight);
         RestoreReplayState(leftInterp,hudEnd);
-        if (gHudValid) LogHudAlphaProbeOnce();
         gWindow->SetEyeDimensions(WorldRenderDim(gEyes[0].width),WorldRenderDim(gEyes[0].height));
         std::memcpy(cameraMtx,original,64);
         Fast::GfxSetInstance(leftInterp);
@@ -1545,7 +1609,6 @@ extern "C" int gdx_vr_host_render_converted(void* interpreterRaw,void* converted
         gWindow->SetEyeDimensions(WorldRenderDim(gEyes[0].width), WorldRenderDim(gEyes[0].height));
     }
 
-    ++gPerfRenderCalls;
     const FastReplayState taskStart=CaptureReplayState(leftInterp);
     FastReplayState taskEnd=taskStart;
     const int replayCount=flatUi ? 1 : 2;
@@ -1566,34 +1629,16 @@ extern "C" int gdx_vr_host_render_converted(void* interpreterRaw,void* converted
         // eye-local persistent interpreter before every replay so RSP/RDP/TMEM/texture-cache state
         // never leaks from the left eye into the right eye (or vice versa).
         Fast::GfxSetInstance(interp);
-        const auto runStart = PerfClock::now();
         interp->StartFrame();
         interp->Run(commands,{});
         DeactivateFastVrEye();
         if (eye==0) taskEnd=CaptureReplayState(interp);
-        const auto runEnd = PerfClock::now();
-        gPerfEyeRunMs[eye] += std::chrono::duration<double, std::milli>(runEnd - runStart).count();
         const GLuint source=static_cast<GLuint>(interp->mGfxFrameBuffer);
-        static bool sCapturePathLogged[2] = {false, false};
-        if (!sCapturePathLogged[eye]) {
-            sCapturePathLogged[eye] = true;
-            GLint viewport[4] = {};
-            GLint drawFbo = 0;
-            glGetIntegerv(GL_VIEWPORT, viewport);
-            glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFbo);
-            __android_log_print(ANDROID_LOG_INFO, kTag,
-                                "eye %d Fast3D capture: source=%s tex=%u cur=%ux%u xr=%ux%u drawFbo=%d viewport=%d,%d %dx%d",
-                                eye, source ? "offscreen" : "default-fbo", source,
-                                interp->mCurDimensions.width, interp->mCurDimensions.height,
-                                gEyes[eye].width, gEyes[eye].height, drawFbo,
-                                viewport[0], viewport[1], viewport[2], viewport[3]);
-        }
 
         // Flat UI is submitted as one 2048x1536 OpenXR quad visible to both eyes. Keep only one
         // 4:3 cache at that exact resolution; the previous path stretched it to a 2800x2933 eye
         // cache and then shrank it back to 2048x1536 at submission time.
         if (flatUi && eye==0) {
-            const auto copyStart = PerfClock::now();
             EnsureCache(0,2048,1536);
             bool copied = false;
             if (source) {
@@ -1607,10 +1652,7 @@ extern "C" int gdx_vr_host_render_converted(void* interpreterRaw,void* converted
             gCacheValid[1]=false;
             gCacheRenderViewValid[0]=false;
             gCacheRenderViewValid[1]=false;
-            const auto copyEnd = PerfClock::now();
-            gPerfCopyMs[0] += std::chrono::duration<double, std::milli>(copyEnd-copyStart).count();
         } else if (!flatUi) {
-            const auto copyStart = PerfClock::now();
             const uint32_t cacheW=WorldRenderDim(gEyes[eye].width);
             const uint32_t cacheH=WorldRenderDim(gEyes[eye].height);
             EnsureCache(eye,cacheW,cacheH);
@@ -1630,8 +1672,6 @@ extern "C" int gdx_vr_host_render_converted(void* interpreterRaw,void* converted
                 gCacheRenderFov[eye]=gEyes[eye].xrFov;
                 gCacheRenderViewValid[eye]=true;
             }
-            const auto copyEnd = PerfClock::now();
-            gPerfCopyMs[eye] += std::chrono::duration<double, std::milli>(copyEnd - copyStart).count();
         }
         interp->EndFrame();
     }
@@ -1699,6 +1739,7 @@ extern "C" void gdx_vr_host_shutdown(void) {
     gHudMatteTextures[0]=gHudMatteTextures[1]=0;
     gHudCompositeProgram=0;
     gHudCompositeVao=0;
+    gHudBlackSampler=gHudWhiteSampler=-1;
     gHudTextureWidth=gHudTextureHeight=0;
     gHudValid=false;
     gRaceHudActive=false;
@@ -1710,5 +1751,8 @@ extern "C" void gdx_vr_host_shutdown(void) {
     // survive as a "ghost" VR runtime and a later launch starts from a genuinely clean process state.
     gContext.reset();
     gBooted=false; gEyesValid=false; gHeadBaseValid=false; gFlatUiActive=true;
-    gRaceTrackingActive=false; gVrCenterPoseValid=false;
+    gRaceTrackingActive=false; gVrCenterPoseValid=false; gCourseCullState.valid=false;
+    gDioramaSortState.valid=false; gDioramaSortState.dirty=true;
+    gVrCameraBasisCache.generation=0; gVrMatrixGeneration=1;
+    gXrProjectionCache[0].valid=gXrProjectionCache[1].valid=false;
 }

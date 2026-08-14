@@ -339,6 +339,36 @@ set(_quest_resolve_fail_new [=[
 ]=])
 string(REPLACE "${_quest_resolve_fail_old}" "${_quest_resolve_fail_new}" _gdx_gfx_bridge "${_gdx_gfx_bridge}")
 
+# Phase 2 Quest hot-path cleanup. ConversionStats remains allocated because rare error paths keep
+# detailed evidence, but production VR does not need per-command census writes. Remove only the
+# counters touched for every translated command/list; conversion behavior and all error handling are
+# unchanged. Also compile out the old unconditional 30-racer attack-highlight probe, which ran two
+# full verdict scans after every graphics task even when no diagnostic gate was enabled.
+string(REPLACE
+    "if (mStats != nullptr) mStats->convertedLists++;"
+    "#if 0 /* Quest production: converted-list census disabled */\n        if (mStats != nullptr) mStats->convertedLists++;\n#endif"
+    _gdx_gfx_bridge "${_gdx_gfx_bridge}")
+string(REPLACE
+    "if (mStats != nullptr) mStats->opCounts[op]++;"
+    "#if 0 /* Quest production: per-command opcode census disabled */\n            if (mStats != nullptr) mStats->opCounts[op]++;\n#endif"
+    _gdx_gfx_bridge "${_gdx_gfx_bridge}")
+string(REPLACE
+    "if (mStats != nullptr) mStats->commandsOut++;"
+    "#if 0 /* Quest production: per-command output census disabled */\n                    if (mStats != nullptr) mStats->commandsOut++;\n#endif"
+    _gdx_gfx_bridge "${_gdx_gfx_bridge}")
+string(REPLACE
+    "                mStats->commandsOut++;\n                if (op == kOpSetTextureImage) mStats->textureCopies++;"
+    "#if 0 /* Quest production: per-command output/texture census disabled */\n                mStats->commandsOut++;\n                if (op == kOpSetTextureImage) mStats->textureCopies++;\n#endif"
+    _gdx_gfx_bridge "${_gdx_gfx_bridge}")
+string(REPLACE
+    "    {\n        // POSITIVE CONTROL FIRST. A probe that reports zero without proving its subject occurred is"
+    "#if 0 /* Quest production: old attack-highlight diagnostic disabled */\n    {\n        // POSITIVE CONTROL FIRST. A probe that reports zero without proving its subject occurred is"
+    _gdx_gfx_bridge "${_gdx_gfx_bridge}")
+string(REPLACE
+    "    }\n    gdx_perf_sub_end(GDX_PERF_SUB_XLATE);"
+    "    }\n#endif\n    gdx_perf_sub_end(GDX_PERF_SUB_XLATE);"
+    _gdx_gfx_bridge "${_gdx_gfx_bridge}")
+
 file(WRITE "${GDX_QUEST_GENERATED_DIR}/n64_gfx_bridge_quest.cpp" "${_gdx_gfx_bridge}")
 
 # 2) Asset binding reverse lookup: the generated table already records {symbol, ROM offset, o2r key}.
@@ -815,8 +845,18 @@ file(WRITE "${GDX_QUEST_GENERATED_DIR}/camera_quest.c" "${_gdx_camera}")
 # made visibility fully omnidirectional (absolute depth only), which prevented head-turn pop-in but
 # forced large amounts of off-screen track geometry through both eye renders. The host now evaluates
 # the current physical HMD direction/position with a conservative chunk margin, preserving 6DoF
-# visibility while restoring the most important CPU/GPU culling win.
+# visibility while restoring the most important CPU/GPU culling win. Diorama keeps the complete
+# streamed chunk ring but replaces chase-camera depth with its real miniature eye depth so the
+# original painter/group ordering remains correct when the track crosses over itself.
 file(READ "${GDX_DECOMP_DIR}/src/game/course.c" _gdx_course)
+# Full-ring diorama sorting can legitimately create one painter group per streamed chunk. Stock
+# allocates only 64 (96 with EK) because its all-visible path collapses the whole ring to one group;
+# our Quest path deliberately does not. Keep one extra slot because the stock builder increments
+# the group pointer before testing the end sentinel.
+string(REPLACE "#define SEGMENT_CHUNK_GROUP_COUNT 64" "#define SEGMENT_CHUNK_GROUP_COUNT 1025"
+    _gdx_course "${_gdx_course}")
+string(REPLACE "#define SEGMENT_CHUNK_GROUP_COUNT 96" "#define SEGMENT_CHUNK_GROUP_COUNT 769"
+    _gdx_course "${_gdx_course}")
 set(_quest_course_cull_old [=[
 #ifdef PORT
         if ((chunk->depth < 0.0f) || ((sCourseFarRenderDistance * gdxFarRenderDistanceScale) < chunk->depth)) {
@@ -858,10 +898,13 @@ set(_quest_course_cull_old [=[
 set(_quest_course_cull_new [=[
 #ifdef GDX_QUEST_VR
         {
-            extern s32 gdx_vr_host_course_chunk_visible(f32 x, f32 y, f32 z, f32 depth, f32 farDistance);
-            chunk->drawState = gdx_vr_host_course_chunk_visible(
+            f32 gdxSortDepth = chunk->depth;
+            extern s32 gdx_vr_host_course_chunk_query(f32 x, f32 y, f32 z, f32 depth, f32 farDistance,
+                                                       f32* sortDepth);
+            chunk->drawState = gdx_vr_host_course_chunk_query(
                 chunk->pos.x, chunk->pos.y, chunk->pos.z, chunk->depth,
-                sCourseFarRenderDistance * gdxFarRenderDistanceScale);
+                sCourseFarRenderDistance * gdxFarRenderDistanceScale, &gdxSortDepth);
+            chunk->depth = gdxSortDepth;
         }
 #elif defined(PORT)
         if ((chunk->depth < 0.0f) || ((sCourseFarRenderDistance * gdxFarRenderDistanceScale) < chunk->depth)) {
@@ -916,6 +959,103 @@ set(_quest_course_cull_new [=[
 #endif
 ]=])
 string(REPLACE "${_quest_course_cull_old}" "${_quest_course_cull_new}" _gdx_course "${_gdx_course}")
+
+# When every streamed chunk is visible, stock F-Zero collapses the complete circular track to one
+# forward-drawn group. That shortcut is valid for the native chase-camera view, but the diorama can
+# see overpasses and distant portions from arbitrary angles. Preserve all chunks while rebuilding
+# painter groups from the diorama depth written above, otherwise lower track sections can draw over
+# nearer/upper ones. Non-diorama behavior is byte-for-byte equivalent to the stock branch.
+set(_quest_course_all_visible_old [=[
+    if (D_800CF500 == gSegmentChunkCount) {
+        segmentChunkGroup = sSegmentChunkGroups;
+        segmentChunkGroup->startChunk = segmentChunkGroup->endChunk = gSegmentChunks;
+        segmentChunkGroup->drawState = 1;
+        segmentChunkGroup->averageDepth = 0.0f;
+        segmentChunkGroupEnd = segmentChunkGroup + 1;
+    } else {
+]=])
+set(_quest_course_all_visible_new [=[
+    if (D_800CF500 == gSegmentChunkCount) {
+#ifdef GDX_QUEST_VR
+        extern s32 gdx_vr_host_is_diorama(void);
+        if (gdx_vr_host_is_diorama()) {
+            SegmentChunk* gdxPrevChunk;
+            s32 gdxHasBoundary = 0;
+
+            /* Find a natural circular start at a direction/depth discontinuity. The second pass
+             * above has already assigned each visible chunk drawState +/-1 from local depth slope. */
+            chunk = gSegmentChunks;
+            do {
+                gdxPrevChunk = (chunk == gSegmentChunks) ? (sLastSegmentChunk - 1) : (chunk - 1);
+                var_fv1 = chunk->depth - gdxPrevChunk->depth;
+                if ((chunk->drawState != gdxPrevChunk->drawState) ||
+                    (var_fv1 < -D_800CF51C) || (D_800CF51C < var_fv1)) {
+                    parseStartChunk = chunk;
+                    gdxHasBoundary = 1;
+                    break;
+                }
+                chunk++;
+            } while (chunk != sLastSegmentChunk);
+
+            segmentChunkGroup = sSegmentChunkGroups;
+            if (!gdxHasBoundary) {
+                /* Truly monotonic/simple full ring: one group is still correct, but preserve its
+                 * actual direction and representative diorama depth instead of forcing +1/zero. */
+                segmentChunkGroup->startChunk = segmentChunkGroup->endChunk = gSegmentChunks;
+                segmentChunkGroup->drawState = gSegmentChunks->drawState;
+                segmentChunkGroup->averageDepth = 0.0f;
+                chunk = gSegmentChunks;
+                var_a0 = 0;
+                do {
+                    segmentChunkGroup->averageDepth += chunk->depth;
+                    var_a0++;
+                    chunk++;
+                } while (chunk != sLastSegmentChunk);
+                segmentChunkGroup->averageDepth /= var_a0;
+                segmentChunkGroupEnd = segmentChunkGroup + 1;
+            } else {
+                chunk = parseStartChunk;
+                do {
+                    segmentChunkGroup->startChunk = chunk;
+                    segmentChunkGroup->drawState = lastChunkDrawState = chunk->drawState;
+                    segmentChunkGroup->averageDepth = 0.0f;
+                    temp_fa0 = chunk->depth;
+                    var_a0 = 0;
+
+                    do {
+                        segmentChunkGroup->averageDepth += chunk->depth;
+                        var_a0++;
+                        chunk++;
+                        if (chunk == sLastSegmentChunk) {
+                            chunk = gSegmentChunks;
+                        }
+                        if (chunk == parseStartChunk) {
+                            break;
+                        }
+                        var_fv1 = temp_fa0 - chunk->depth;
+                    } while ((chunk->drawState == lastChunkDrawState) &&
+                             !((var_fv1 < -D_800CF51C) || (D_800CF51C < var_fv1)));
+
+                    segmentChunkGroup->endChunk = chunk;
+                    segmentChunkGroup->averageDepth /= var_a0;
+                    if (++segmentChunkGroup == sSegmentChunkGroups + ARRAY_COUNT(sSegmentChunkGroups)) {
+                        return sCourseDisp;
+                    }
+                } while (chunk != parseStartChunk);
+                segmentChunkGroupEnd = segmentChunkGroup;
+            }
+        } else
+#endif
+        {
+            segmentChunkGroup = sSegmentChunkGroups;
+            segmentChunkGroup->startChunk = segmentChunkGroup->endChunk = gSegmentChunks;
+            segmentChunkGroup->drawState = 1;
+            segmentChunkGroup->averageDepth = 0.0f;
+            segmentChunkGroupEnd = segmentChunkGroup + 1;
+        }
+    } else {
+]=])
+string(REPLACE "${_quest_course_all_visible_old}" "${_quest_course_all_visible_new}" _gdx_course "${_gdx_course}")
 file(WRITE "${GDX_QUEST_GENERATED_DIR}/course_quest.c" "${_gdx_course}")
 
 # 5d) Racer position/rival markers. Stock F-Zero projects the top-3/rival world positions through
