@@ -71,11 +71,11 @@ If no compatible US ROM is present, the app keeps the native stereo OpenXR verif
 
 ## Source revisions pinned by the build
 
-- G-Diffuser: `719fd82a3af605b064fb53ad6eecb020090b4c5d`
-- libultraship: `a4919b181e637193f2b8ae975e31505abbf99e71`
-- F-Zero X decomp: `f7fd0fd0242f8dfb5f357f604bb73b6a4e990809`
-- Torch: `c1bdc6fde97fbaa4495c9e859f635290840a12d3`
-- libucontext: `49e671dd52ff6791295d8161ad3b6da7dc5f6f9d`
+- [G-Diffuser](https://github.com/Zorkats/G-Diffuser): [`719fd82a3af605b064fb53ad6eecb020090b4c5d`](https://github.com/Zorkats/G-Diffuser/commit/719fd82a3af605b064fb53ad6eecb020090b4c5d)
+- [libultraship](https://github.com/Zorkats/libultraship): [`a4919b181e637193f2b8ae975e31505abbf99e71`](https://github.com/Zorkats/libultraship/commit/a4919b181e637193f2b8ae975e31505abbf99e71)
+- [F-Zero X decomp](https://github.com/Zorkats/fzerox): [`f7fd0fd0242f8dfb5f357f604bb73b6a4e990809`](https://github.com/Zorkats/fzerox/commit/f7fd0fd0242f8dfb5f357f604bb73b6a4e990809)
+- [Torch](https://github.com/Zorkats/Torch): [`c1bdc6fde97fbaa4495c9e859f635290840a12d3`](https://github.com/Zorkats/Torch/commit/c1bdc6fde97fbaa4495c9e859f635290840a12d3)
+- [libucontext](https://github.com/kaniini/libucontext): [`49e671dd52ff6791295d8161ad3b6da7dc5f6f9d`](https://github.com/kaniini/libucontext/commit/49e671dd52ff6791295d8161ad3b6da7dc5f6f9d)
 
 ## Validation status
 
